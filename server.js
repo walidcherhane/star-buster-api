@@ -150,14 +150,8 @@ async function analyzeStarPatterns(stargazers, repoInfo) {
     }
 
     // Check for default avatar pattern (rough estimation)
-    if (
-      user.avatar_url &&
-      user.avatar_url.includes("?v=4") &&
-      !user.avatar_url.includes("avatars0") &&
-      !user.avatar_url.includes("avatars1") &&
-      !user.avatar_url.includes("avatars2") &&
-      !user.avatar_url.includes("avatars3")
-    ) {
+    if (!user.avatar_url) {
+      console.log("🚀 ~ stargazers.forEach ~ user.avatar_url:", user);
       // This is a very rough check for default avatars
       analysis.patterns.noAvatar++;
     }
