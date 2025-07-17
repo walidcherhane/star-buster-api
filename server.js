@@ -246,7 +246,6 @@ function validateStar(user) {
     user.public_repos < 5 &&
     createdAt > new Date("2022-01-01") &&
     !user.email &&
-    !user.bio &&
     createdDate === updatedDate &&
     updatedDate === starredDate &&
     user.hireable !== true &&
@@ -300,7 +299,6 @@ function analyzeAdvancedPatterns(stargazers, detailedUsers, repoInfo) {
       newAccounts: 0,
       noRepos: 0,
       noEmail: 0,
-      noBio: 0,
       lowEngagement: 0,
       sameDayPattern: 0,
       coordinated: 0,
@@ -344,7 +342,6 @@ function analyzeAdvancedPatterns(stargazers, detailedUsers, repoInfo) {
     if (accountAge < 30) analysis.patterns.newAccounts++;
     if (user.public_repos === 0) analysis.patterns.noRepos++;
     if (!user.email) analysis.patterns.noEmail++;
-    if (!user.bio) analysis.patterns.noBio++;
     if (user.followers < 2 && user.following < 2)
       analysis.patterns.lowEngagement++;
 
@@ -436,10 +433,6 @@ function calculateAdvancedSuspicionScore(analysis, repoInfo) {
 
     const newAccountRatio = patterns.newAccounts / analysis.detailedSample;
     score += newAccountRatio * 15;
-
-    const noProfileRatio =
-      (patterns.noEmail + patterns.noBio) / (analysis.detailedSample * 2);
-    score += noProfileRatio * 10;
   }
 
   // Basic patterns
