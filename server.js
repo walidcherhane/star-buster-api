@@ -46,6 +46,10 @@ async function saveAnalysisResult(
   analysis,
   repoInfo
 ) {
+  // Set expiration to 24 hours from now
+  const expiresAt = new Date();
+  expiresAt.setHours(expiresAt.getHours() + 24);
+
   const { data, error } = await supabase
     .from("analysis_results")
     .insert({
@@ -59,6 +63,7 @@ async function saveAnalysisResult(
       suspicion_indicators: analysis.suspicionIndicators,
       repository_data: repoInfo,
       analysis_data: analysis,
+      expires_at: expiresAt.toISOString(),
     })
     .select("id")
     .single();
@@ -242,7 +247,6 @@ function validateStar(user) {
     createdAt > new Date("2022-01-01") &&
     !user.email &&
     !user.bio &&
-    !user.blog &&
     createdDate === updatedDate &&
     updatedDate === starredDate &&
     user.hireable !== true &&
@@ -290,15 +294,16 @@ function analyzeAdvancedPatterns(stargazers, detailedUsers, repoInfo) {
     detailedSample: detailedUsers.length,
     patterns: {
       genericUsernames: 0,
+      genericUsernamesList: [],
+      botLikeNames: 0,
+      botLikeNamesList: [],
       newAccounts: 0,
       noRepos: 0,
       noEmail: 0,
       noBio: 0,
-      noBlog: 0,
       lowEngagement: 0,
       sameDayPattern: 0,
       coordinated: 0,
-      botLikeNames: 0,
       suspiciousCreationDates: {},
       starVelocitySpikes: [],
       realStars: 0,
@@ -316,10 +321,12 @@ function analyzeAdvancedPatterns(stargazers, detailedUsers, repoInfo) {
 
     if (isGenericUsername(username)) {
       analysis.patterns.genericUsernames++;
+      analysis.patterns.genericUsernamesList.push(username);
     }
 
     if (isBotLikeName(username)) {
       analysis.patterns.botLikeNames++;
+      analysis.patterns.botLikeNamesList.push(username);
     }
   });
 
@@ -338,7 +345,6 @@ function analyzeAdvancedPatterns(stargazers, detailedUsers, repoInfo) {
     if (user.public_repos === 0) analysis.patterns.noRepos++;
     if (!user.email) analysis.patterns.noEmail++;
     if (!user.bio) analysis.patterns.noBio++;
-    if (!user.blog) analysis.patterns.noBlog++;
     if (user.followers < 2 && user.following < 2)
       analysis.patterns.lowEngagement++;
 
@@ -432,8 +438,7 @@ function calculateAdvancedSuspicionScore(analysis, repoInfo) {
     score += newAccountRatio * 15;
 
     const noProfileRatio =
-      (patterns.noEmail + patterns.noBio + patterns.noBlog) /
-      (analysis.detailedSample * 3);
+      (patterns.noEmail + patterns.noBio) / (analysis.detailedSample * 2);
     score += noProfileRatio * 10;
   }
 
@@ -576,7 +581,9 @@ async function analyzeBasicPatterns(stargazers, repoInfo) {
     analyzedSample: stargazers.length,
     patterns: {
       genericUsernames: 0,
+      genericUsernamesList: [], // Added to track generic usernames
       botLikeNames: 0,
+      botLikeNamesList: [], // Added to track bot-like names
       suspiciousCreationDates: {},
     },
     suspicionIndicators: [],
@@ -589,10 +596,12 @@ async function analyzeBasicPatterns(stargazers, repoInfo) {
 
     if (isGenericUsername(username)) {
       analysis.patterns.genericUsernames++;
+      analysis.patterns.genericUsernamesList.push(username);
     }
 
     if (isBotLikeName(username)) {
       analysis.patterns.botLikeNames++;
+      analysis.patterns.botLikeNamesList.push(username);
     }
   });
 
@@ -648,7 +657,6 @@ app.get("/", (req, res) => {
       "Same-day pattern analysis",
       "Deep user profiling",
       "Coordinated starring detection",
-      "Professional-grade algorithms",
     ],
     endpoints: {
       health: "GET /health",
@@ -671,7 +679,6 @@ app.get("/health", (req, res) => {
       rateLimitHandling: true,
     },
     rateLimit: {
-      hasToken: !!GITHUB_TOKEN,
       estimated: GITHUB_TOKEN ? "5000/hour" : "60/hour",
     },
   });
@@ -709,13 +716,68 @@ app.post("/analyze", async (req, res) => {
       });
     }
 
+    // Check if we already have a recent analysis for this repo
+    const { data: existingAnalysis, error: searchError } = await supabase
+      .from("analysis_results")
+      .select("*")
+      .eq("repo_owner", repoOwner)
+      .eq("repo_name", repoName)
+      .gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false })
+      .single();
+
+    if (searchError && searchError.code !== "PGRST116") {
+      // PGRST116 is "no rows returned"
+      console.error("Error searching for existing analysis:", searchError);
+    }
+
+    // If we have a recent analysis with same or higher sample size and same analysis type, return it
+    if (existingAnalysis) {
+      const existingAnalysisData = existingAnalysis.analysis_data;
+      const existingIsAdvanced = existingAnalysisData.detailedSample > 0;
+      const requestedIsAdvanced = deepAnalysis;
+
+      // Check if analysis type matches and sample size is sufficient
+      if (
+        existingIsAdvanced === requestedIsAdvanced &&
+        existingAnalysisData.analyzedSample >= maxStars
+      ) {
+        console.log(
+          `Returning existing ${
+            requestedIsAdvanced ? "advanced" : "basic"
+          } analysis for ${repoOwner}/${repoName}`
+        );
+        return res.json({
+          id: existingAnalysis.id,
+          repository: existingAnalysis.repository_data,
+          analysis: existingAnalysisData,
+          shareUrl: `${process.env.FRONTEND_URL}/results/${existingAnalysis.id}`,
+          metadata: {
+            analyzedAt: existingAnalysis.created_at,
+            analysisType: existingIsAdvanced ? "advanced" : "basic",
+            sampleSize: existingAnalysisData.analyzedSample,
+            detailedSample: existingAnalysisData.detailedSample || 0,
+            fromCache: true,
+          },
+        });
+      } else {
+        console.log(
+          `Found existing analysis but ${
+            existingIsAdvanced !== requestedIsAdvanced
+              ? "analysis type differs"
+              : "sample size too small"
+          }. Performing new analysis.`
+        );
+      }
+    }
+
     console.log(
       `Starting ${
         deepAnalysis ? "advanced" : "basic"
       } analysis for ${repoOwner}/${repoName}`
     );
 
-    // Fetch repository information
+    // If no recent analysis found or sample size is smaller, perform new analysis
     const repoInfo = await fetchRepoInfo(repoOwner, repoName);
 
     // Fetch stargazers with timestamps
